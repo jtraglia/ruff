@@ -495,9 +495,10 @@ pub(crate) fn format_source(
         }
         SourceKind::Markdown(unformatted_document) => {
             if !settings.preview.is_enabled() {
-                return Err(FormatCommandError::MarkdownExperimental(
-                    path.map(Path::to_path_buf),
-                ));
+                // Markdown formatting is still preview-only. Silently skip
+                // rather than error so that markdown files included for
+                // linting don't break `ruff format` runs.
+                return Ok(FormattedSource::Unchanged);
             }
 
             if range.is_some() {
