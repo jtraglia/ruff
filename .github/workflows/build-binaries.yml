@@ -26,7 +26,13 @@ concurrency:
 permissions: {}
 
 env:
-  PACKAGE_NAME: ruff
+  # Distribution name (matches `name` in pyproject.toml). Used for wheel
+  # filename globs and `pip install <name>`. Wheels normalize hyphens to
+  # underscores, so `ruff-md` becomes `ruff_md` in filenames.
+  PACKAGE_NAME: ruff_md
+  # Python module name (matches `module-name` under `[tool.maturin]`) and
+  # the binary on `$PATH`. Both stay as `ruff` even though the package
+  # was renamed.
   MODULE_NAME: ruff
   PYTHON_VERSION: "3.13"
   CARGO_INCREMENTAL: 0
