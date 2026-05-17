@@ -59,7 +59,10 @@ jobs:
           TAG: ${{ inputs.plan != '' && fromJson(inputs.plan).announcement_tag || 'dry-run' }}
         run: |
           version=$(grep -m 1 "^version = " pyproject.toml | sed -e 's/version = "\(.*\)"/\1/g')
-          if [ "${TAG}" != "${version}" ]; then
+          # Strip optional leading `v` from the input tag (e.g. `v0.15.13` -> `0.15.13`)
+          # so both tag conventions match the bare PEP 440 version in pyproject.toml.
+          stripped_tag="${TAG#v}"
+          if [ "${stripped_tag}" != "${version}" ]; then
             echo "The input tag does not match the version from pyproject.toml:" >&2
             echo "${TAG}" >&2
             echo "${version}" >&2
