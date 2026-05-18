@@ -1,0 +1,134 @@
+# When upstream astral-sh/ruff cuts a new release tag, rebase this fork's
+# patches onto it, push a matching tag to origin, and dispatch release.yml
+# to publish `ruff-md` to PyPI. The fork's patches are computed as the
+# commits between upstream's previous tag and the patch branch HEAD, i.e.
+# anything sitting on top of the upstream tag with the same name as the
+# fork's latest release.
+#
+# If a rebase conflicts, the job fails — manual intervention required.
+name: Auto-rebase and release on new upstream tags
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  "contents": "write"
+  "actions": "write"
+
+env:
+  PATCH_BRANCH: lint-markdown
+  UPSTREAM_REPO: https://github.com/astral-sh/ruff.git
+
+jobs:
+  rebase-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream tags into a private namespace
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          # Mirror upstream tags into refs/upstream-tags/* so they don't
+          # collide with origin tags of the same name. Origin and upstream
+          # share tag names but point at different commits — origin's tag
+          # has the fork's patches on top of upstream's tag commit.
+          git fetch --no-tags upstream "+refs/tags/*:refs/upstream-tags/*"
+
+      - name: Determine which upstream releases are new
+        id: plan
+        run: |
+          set -euo pipefail
+
+          # Baseline: the latest semver tag already on origin = the most
+          # recent ruff-md release we've published.
+          PREV=$(git tag --list | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          if [ -z "$PREV" ]; then
+            echo "::error::No existing fork release tag found on origin; cannot establish a baseline."
+            exit 1
+          fi
+          echo "Previous fork release: $PREV"
+
+          # Upstream releases newer than PREV, oldest first.
+          UPSTREAM_TAGS=$(
+            git for-each-ref --format='%(refname)' 'refs/upstream-tags/' \
+              | sed 's|^refs/upstream-tags/||' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V
+          )
+
+          NEW_TAGS=$(
+            for t in $UPSTREAM_TAGS; do
+              latest=$(printf '%s\n%s\n' "$PREV" "$t" | sort -V | tail -n1)
+              if [ "$latest" = "$t" ] && [ "$t" != "$PREV" ]; then
+                echo "$t"
+              fi
+            done
+          )
+
+          if [ -z "$NEW_TAGS" ]; then
+            echo "No new upstream releases since $PREV; nothing to do."
+            echo "tags=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Will release in order:"
+          echo "$NEW_TAGS"
+
+          {
+            echo "prev=$PREV"
+            echo "tags<<EOF"
+            echo "$NEW_TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebase, tag, and dispatch release for each new version
+        if: steps.plan.outputs.tags != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREV: ${{ steps.plan.outputs.prev }}
+          NEW_TAGS: ${{ steps.plan.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r NEW; do
+            [ -z "$NEW" ] && continue
+
+            echo "::group::Releasing $NEW (rebasing fork patches from $PREV onto $NEW)"
+
+            # Fork patches = refs/upstream-tags/PREV..PATCH_BRANCH. Replay
+            # them onto refs/upstream-tags/NEW. A conflict aborts the job.
+            git checkout "$PATCH_BRANCH"
+            git rebase --onto "refs/upstream-tags/$NEW" "refs/upstream-tags/$PREV"
+
+            # Tag the rebased HEAD and push the tag to origin. The tag name
+            # is bare semver (no `v` prefix) to match upstream's convention.
+            git tag "$NEW"
+            git push origin "refs/tags/$NEW"
+
+            # Advance the patch branch to the rebased HEAD so origin reflects
+            # the latest release base. Force-push is safe: existing tags pin
+            # the previous commits independently of the branch ref.
+            git push --force-with-lease origin "$PATCH_BRANCH"
+
+            # workflow_dispatch is the documented exception that lets a
+            # GITHUB_TOKEN-driven action trigger another workflow run.
+            # release.yml on the tagged commit is the fork-customized one
+            # (publishes ruff-md to PyPI).
+            gh workflow run release.yml --ref "$NEW" -f tag="$NEW"
+
+            PREV="$NEW"
+            echo "::endgroup::"
+          done <<< "$NEW_TAGS"
