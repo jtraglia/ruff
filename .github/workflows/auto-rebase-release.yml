@@ -5,7 +5,12 @@
 # anything sitting on top of the upstream tag with the same name as the
 # fork's latest release.
 #
-# If a rebase conflicts, the job fails — manual intervention required.
+# Every upstream release bumps `version` in pyproject.toml on the line
+# directly below the fork's `name = "ruff-md"` edit, which git can't
+# 3-way merge cleanly. The release loop handles that one case by taking
+# upstream's pyproject.toml and force-patching the project name back to
+# `ruff-md`. Any other conflict (different file, or unexpected post-patch
+# state) still fails the job and requires manual intervention.
 name: Auto-rebase and release on new upstream tags
 
 on:
@@ -109,9 +114,28 @@ jobs:
             echo "::group::Releasing $NEW (rebasing fork patches from $PREV onto $NEW)"
 
             # Fork patches = refs/upstream-tags/PREV..PATCH_BRANCH. Replay
-            # them onto refs/upstream-tags/NEW. A conflict aborts the job.
+            # them onto refs/upstream-tags/NEW. If pyproject.toml is the
+            # only conflict, take upstream's copy and re-stamp the project
+            # name; any other conflict aborts the job.
             git checkout "$PATCH_BRANCH"
-            git rebase --onto "refs/upstream-tags/$NEW" "refs/upstream-tags/$PREV"
+            if ! git rebase --onto "refs/upstream-tags/$NEW" "refs/upstream-tags/$PREV"; then
+              if [ "$(git diff --name-only --diff-filter=U)" = "pyproject.toml" ]; then
+                # During a rebase, "ours" is the rebase target (upstream).
+                git checkout --ours -- pyproject.toml
+                sed -i 's/^name = "ruff"$/name = "ruff-md"/' pyproject.toml
+                if ! grep -q '^name = "ruff-md"$' pyproject.toml; then
+                  echo "::error::Failed to re-apply name = \"ruff-md\" to pyproject.toml"
+                  git rebase --abort
+                  exit 1
+                fi
+                git add pyproject.toml
+                GIT_EDITOR=true git rebase --continue
+              else
+                echo "::error::Rebase conflict outside pyproject.toml; manual intervention required."
+                git rebase --abort
+                exit 1
+              fi
+            fi
 
             # Tag the rebased HEAD and push the tag to origin. The tag name
             # is bare semver (no `v` prefix) to match upstream's convention.
