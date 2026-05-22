@@ -36,6 +36,12 @@ jobs:
           ref: ${{ env.PATCH_BRANCH }}
           fetch-depth: 0
           fetch-tags: true
+          # PAT with `workflow` scope is required: the fork patches modify
+          # `.github/workflows/*.yml`, and the default GITHUB_TOKEN refuses
+          # to push refs that touch workflow files. The checkout step
+          # persists this token into `.git/config`, so subsequent
+          # `git push` calls in later steps use it automatically.
+          token: ${{ secrets.RELEASE_PAT }}
           persist-credentials: true
 
       - name: Configure git identity
