@@ -27,7 +27,7 @@ concurrency:
 permissions: {}
 
 env:
-  PACKAGE_NAME: ruff
+  PACKAGE_NAME: ruff_md
   MODULE_NAME: ruff
   PYTHON_VERSION: "3.13"
   CARGO_INCREMENTAL: 0
